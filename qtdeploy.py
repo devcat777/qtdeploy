@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-  Copyright (c) 2023, D3vC4t777 <d3vc4t777@gmail.com>
+  Copyright (c) 2023, D3vC4t <d3vc4t777@gmail.com>
   All rights reservedself.
   
   SPDX-License-Identifier: BSD-3-Clause
