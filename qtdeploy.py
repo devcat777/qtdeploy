@@ -22,6 +22,8 @@ import shutil
 import argparse
 import subprocess
 
+SCRIPT_VERSION = "0.1.0"
+
 START_SCRIPT = """#!/bin/sh
 appname=`basename $0 | sed s,\\.sh$,,`
 
@@ -39,9 +41,6 @@ def die(s):
     sys.stderr.write("[!] %s\n" % s)
     sys.exit(1)
 
-def info(s):
-    sys.stdout.write("[+] %s\n" % s)
-    
 class CommandLineParser:
     DEFAULT_OUTPUT_DIR = "out"
     def __init__(self):
@@ -49,20 +48,33 @@ class CommandLineParser:
         pr.add_argument("-q", "--qmake", help="qmake file")
         pr.add_argument("-f", "--file", help="qt application file")
         pr.add_argument("-o", "--out", default=self.DEFAULT_OUTPUT_DIR, help="output dir(default: %s)" % self.DEFAULT_OUTPUT_DIR)
+        pr.add_argument("-L", "--no-libraries", action="store_true", help="don't collect libraries")
+        pr.add_argument("-P", "--no-plugins", action="store_true", help="don't collect plugins")
+        pr.add_argument('-T', "--no-translations", action="store_true", help="don't collect translations")
+        pr.add_argument('-v', "--version", action="store_true", help="version information")
+        pr.add_argument('-V', "--verbose", action="store_true", help="verbose mode")
         self.__parser = pr
 
     def parse(self):
         opts = self.__parser.parse_args()
+        if opts.version:
+            self.version()
+            
         if opts.qmake is None or opts.file is None:
             die("invalid command line arguments! Try -h or --help.")
         return opts
+
+    def version(self):
+        global SCRIPT_VERSION
+        print("%s: Linux Qt Application Deployment Tool version %s" % (os.path.basename(sys.argv[0]), SCRIPT_VERSION))
+        sys.exit(0)
 
 class Dependence:
     def __init__(self, name, path):
         self.name = name
         self.path = path
 
-class Plugin:
+class Element:
     def __init__(self, filename, relative):
         self.filename = filename
         self.relative = relative
@@ -71,10 +83,14 @@ class App:
     INSTALL_BIN = "bin"
     INSTALL_LIB = "lib"
     INSTALL_PLUGINS = "plugins"
+    INSTALL_TRANSLATIONS = "translations"
     
-    SO_EXT_NAME = ".so"
+    SO_EXT_NAME = ".so" # libraries and plugins
+    QM_EXT_NAME = '.qm' # translations
+    
     QT_INSTALL_LIBS = "QT_INSTALL_LIBS"
     QT_INSTALL_PLUGINS = "QT_INSTALL_PLUGINS"
+    QT_INSTALL_TRANSLATIONS = "QT_INSTALL_TRANSLATIONS"
     
     def __init__(self):
         self.opts = CommandLineParser().parse()
@@ -90,6 +106,10 @@ class App:
     def exec(self, *args):
         return self.exec_output(*args)
     
+    def info(self, s):
+        if self.is_verbose():
+            sys.stdout.write("[+] %s\n" % s)
+            
     def qmake_query_vars(self):
         r = self.exec(self.opts.qmake, "-query")
         d = dict()
@@ -118,17 +138,20 @@ class App:
                     d[name] = Dependence(name, path)
         return d
 
-    def find_plugins(self, path):
-        plugins = list()
-        for root, _ , names in os.walk(path):
+    def collect_elements_by_ext_name(self, path, ext_name):
+        elements = list()
+        for root, _, names in os.walk(path):
             for name in names:
                 filename = os.path.join(root, name)
                 ext = os.path.splitext(filename)[1].lower()
-                if ext == self.SO_EXT_NAME:
+                if ext == ext_name:
                     relative = filename[len(path):]
                     relative = relative.lstrip("/")
-                    plugins.append(Plugin(filename, relative))
-        return plugins
+                    elements.append(Element(filename, relative))
+        return elements
+    
+    def find_plugins(self, path):
+        return self.collect_elements_by_ext_name(path, self.SO_EXT_NAME)
         
     def collect_plugins(self):
         plugin_dir = self.qmake_var(self.QT_INSTALL_PLUGINS)
@@ -143,7 +166,7 @@ class App:
     def install_file(self, src, dpath, dst, runable=False):
         filename = os.path.join(self.opts.out, dpath, dst)
         pathname = os.path.dirname(filename)
-        info("installing file: %s" % src)
+        self.info("installing file: %s" % src)
         os.makedirs(pathname, 0o777, True)
         shutil.copyfile(src, filename)
 
@@ -156,7 +179,7 @@ class App:
         with open(script, "w") as fp:
             fp.write(START_SCRIPT % (self.INSTALL_LIB, self.INSTALL_BIN))
 
-        info("creating start script: %s" % script)
+        self.info("creating start script: %s" % script)
         return script
         
     def setup_input_file(self, filename):
@@ -175,7 +198,28 @@ class App:
             shutil.rmtree(self.opts.out)
         os.mkdir(self.opts.out)
         
+    def has_plugins(self):
+        return not self.opts.no_plugins
+
+    def has_libraries(self):
+        return not self.opts.no_libraries
+
+    def has_translations(self):
+        return not self.opts.no_translations
+    
+    def is_verbose(self):
+        return self.opts.verbose
+    
+    def install_translations(self, path):
+        translations = self.collect_elements_by_ext_name(path, self.QM_EXT_NAME)
+        for translation in translations:
+            self.install_file(translation.filename, self.INSTALL_TRANSLATIONS, translation.relative)
+
     def run(self):
+        self.info("collect plugins option: %s" % self.has_plugins())
+        self.info("collect libraries option: %s" % self.has_libraries())
+        self.info("collect translations option: %s" % self.has_translations())
+        
         self.reset_outdir()
         
         # collect all plugins (TODO: we could optimize this, such as strip unnecessary plugins)
@@ -191,16 +235,22 @@ class App:
             die("failed to parse deps from file: %s" % self.opts.file)
 
         # check each plugin dependencies and install plugin files (so only)
-        for plugin in plugins:
-            plugin_deps = self.find_dependencies(plugin.filename)
-            if plugin_deps is None:
-                die('failed to parse deps from plugin: %s' % plugin.filename)
-            deps.update(plugin_deps)
-            self.install_file(plugin.filename, self.INSTALL_PLUGINS, plugin.relative)
+        if self.has_plugins() and self.has_libraries():
+            for plugin in plugins:
+                plugin_deps = self.find_dependencies(plugin.filename)
+                if plugin_deps is None:
+                    die('failed to parse deps from plugin: %s' % plugin.filename)
+                deps.update(plugin_deps)
+                self.install_file(plugin.filename, self.INSTALL_PLUGINS, plugin.relative)
 
         # install all dependencies which are collected from input file and plugins
-        for dep in deps.values():
-            self.install_file(dep.path, self.INSTALL_LIB, dep.name)
+        if self.has_libraries():
+            for dep in deps.values():
+                self.install_file(dep.path, self.INSTALL_LIB, dep.name)
+
+        if self.has_translations():
+            translation_dir = self.qmake_var(self.QT_INSTALL_TRANSLATIONS)
+            self.install_translations(translation_dir)
 
 def main():
     App().run()
