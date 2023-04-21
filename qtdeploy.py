@@ -252,7 +252,16 @@ class App:
             translation_dir = self.qmake_var(self.QT_INSTALL_TRANSLATIONS)
             self.install_translations(translation_dir)
 
+def linux_only():
+    """
+    this script is only working on Linux system
+    """
+    return sys.platform.lower().startswith("linux")
+
 def main():
+    if not linux_only():
+        die("the script will be only working on Linux system!")
+        
     App().run()
     
 if __name__ == "__main__":
