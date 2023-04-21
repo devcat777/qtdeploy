@@ -1,5 +1,7 @@
 # qtdeploy
-Linux Qt Application deployment tool
+
+Linux Qt Application deployment tool.
+
 Tested with Qt6.5 on Ubuntu 22.04 LTS.
 
 ```
